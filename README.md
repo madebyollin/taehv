@@ -98,6 +98,54 @@ If you have a powerful GPU or are decoding at a reduced resolution, you can also
 
 TAEHV is fully causal (with finite receptive field) so it's structurally possible to display TAEHV output "realtime" (the instant each frame is decoded) rather than waiting for the sequence to complete.
 
+## How do I use streaming encoding/decoding?
+
+For processing very long videos or integrating with world models, TAEHV provides streaming classes that maintain temporal state across chunks:
+
+### Streaming Encoder
+
+Process videos in chunks without loading the entire video into memory:
+
+```python
+from taehv import TAEHV, StreamingTAEHVEncoder
+
+model = TAEHV("taehv1_5.pth").cuda().eval()
+encoder = StreamingTAEHVEncoder(model)
+encoder.reset()
+
+# Process video in chunks (e.g., from disk)
+for video_chunk in video_chunks:  # [1, T, 3, H, W]
+    latent = encoder.feed_frames(video_chunk)
+    if latent is not None:
+        save_latent(latent)
+
+# Flush remaining buffered frames
+final_latent = encoder.finalize()
+```
+
+### Streaming Decoder
+
+Decode latents one frame at a time for autoregressive generation:
+
+```python
+from taehv import StreamingTAEHVDecoder
+
+decoder = StreamingTAEHVDecoder(model)
+decoder.reset()
+
+# Decode latents one at a time (e.g., from world model)
+for latent_frame in latent_sequence:  # [1, 1, 32, H, W]
+    frames = decoder.decode_single_latent(latent_frame)  # → [1, 4, 3, H', W']
+    render_frames(frames)
+```
+
+The streaming classes maintain MemBlock and TPool/TGrow state across calls, ensuring temporal consistency. This enables:
+- **O(1) memory** processing of arbitrarily long videos
+- **Autoregressive generation** where latents are produced one at a time
+- **True streaming** pipelines: read → encode → decode → write
+
+See [examples/TAEHV1.5_Streaming_Demo.ipynb](examples/TAEHV1.5_Streaming_Demo.ipynb) for a complete working example.
+
 ## How can I cite TAEHV in a publication?
 
 If you find TAEHV useful in your research, you can cite the TAEHV repo as a web link:
