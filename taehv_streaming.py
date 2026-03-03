@@ -202,14 +202,9 @@ class StreamingTAEHVEncoder:
                         self.work_queue.insert(0, TWorkItem(xt, layer_idx + 1))
 
                 if chunk_outputs:
-                    latents = torch.stack(chunk_outputs, dim=1)
-                    self.output_latents.append(latents)
+                    return torch.stack(chunk_outputs, dim=1)
 
-        # Concatenate all output latents
-        if self.output_latents:
-            return torch.cat(self.output_latents, dim=1)
-        else:
-            return None
+        return None
 
 
 class StreamingTAEHVDecoder:
