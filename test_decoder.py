@@ -15,14 +15,22 @@ LATENT_H, LATENT_W = 32, 64
 N_WARMUP = 2
 N_EVAL = 5
 
+taehv = TAEHV(checkpoint_path=CHECKPOINT).to(DEVICE, DTYPE)
+taehv.eval()
+streaming = StreamingTAEHV(taehv)
 
-def make_latents(taehv):
+# --- Compilation hook (optional) ---
+# Uncomment and modify to experiment with torch.compile:
+# streaming.decode = torch.compile(streaming.decode)
+
+
+def make_latents():
     return torch.randn(1, N_LATENT_FRAMES, taehv.latent_channels, LATENT_H, LATENT_W, device=DEVICE, dtype=DTYPE)
 
 
-def decode_streaming(taehv, latents):
+def decode_streaming(latents):
     """Decode latents frame-by-frame using StreamingTAEHV. Returns list of decoded frames."""
-    streaming = StreamingTAEHV(taehv)
+    streaming.reset()
     frames = []
     for t in range(latents.shape[1]):
         lat = latents[:, t:t+1]
@@ -47,8 +55,6 @@ def compute_deviation(frames_a, frames_b):
 
 def run():
     print(f"Device: {DEVICE}, dtype: {DTYPE}, checkpoint: {CHECKPOINT}")
-    taehv = TAEHV(checkpoint_path=CHECKPOINT).to(DEVICE, DTYPE)
-    taehv.eval()
     expected_frames = N_LATENT_FRAMES * taehv.t_upscale - taehv.frames_to_trim
 
     print(f"\nLatent shape: [1, {N_LATENT_FRAMES}, {taehv.latent_channels}, {LATENT_H}, {LATENT_W}]")
@@ -57,9 +63,9 @@ def run():
     # --- Warmup ---
     print(f"\nRunning {N_WARMUP} warmup calls...")
     for _ in range(N_WARMUP):
-        latents = make_latents(taehv)
+        latents = make_latents()
         with torch.no_grad():
-            decode_streaming(taehv, latents)
+            decode_streaming(latents)
 
     # --- Eval ---
     print(f"Running {N_EVAL} eval calls...")
@@ -68,10 +74,10 @@ def run():
     ref_frames = None
 
     for i in range(N_EVAL):
-        latents = make_latents(taehv)
+        latents = make_latents()
         with torch.no_grad():
             t0 = time.perf_counter()
-            frames = decode_streaming(taehv, latents)
+            frames = decode_streaming(latents)
             if DEVICE.type == "cuda":
                 torch.cuda.synchronize()
             elapsed = time.perf_counter() - t0
@@ -97,8 +103,8 @@ def run():
     # Baseline: decode a fresh random latent, measure deviation from ref
     print("\nComputing deviation metrics...")
     with torch.no_grad():
-        random_latents = make_latents(taehv)
-        random_frames = decode_streaming(taehv, random_latents)
+        random_latents = make_latents()
+        random_frames = decode_streaming(random_latents)
 
     # Align lengths (in case of off-by-one from trimming)
     n = min(len(ref_frames), len(random_frames))
