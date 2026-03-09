@@ -76,21 +76,22 @@ def run():
                 torch.cuda.synchronize()
             elapsed = time.perf_counter() - t0
 
-        n_frames = len(frames)
-        fps = n_frames / elapsed
+        n_latents = latents.shape[1]
+        fps = n_latents / elapsed
+        latency = elapsed / n_latents
         fps_list.append(fps)
-        latency_list.append(elapsed)
+        latency_list.append(latency)
 
         if i == 0:
             ref_frames = frames  # save first run's output for deviation baseline
             ref_latents = latents
 
-        print(f"  Run {i+1}: {n_frames} frames in {elapsed:.3f}s → {fps:.1f} FPS")
+        print(f"  Run {i+1}: {n_latents} latents in {elapsed:.3f}s → {fps:.2f} latents/s, {latency*1000:.2f}ms/latent")
 
     avg_fps = sum(fps_list) / len(fps_list)
     avg_latency = sum(latency_list) / len(latency_list)
-    print(f"\nAverage FPS:     {avg_fps:.2f}")
-    print(f"Average latency: {avg_latency:.3f}s")
+    print(f"\nAverage latents/s: {avg_fps:.2f}")
+    print(f"Average latency:   {avg_latency*1000:.2f}ms/latent")
 
     # --- Deviation metric ---
     # Baseline: decode a fresh random latent, measure deviation from ref
@@ -114,8 +115,8 @@ def run():
     print(f"  A good optimized decoder should have deviation << {random_baseline:.4f} (random baseline).")
 
     return {
-        "avg_fps": avg_fps,
-        "avg_latency": avg_latency,
+        "avg_latents_per_sec": avg_fps,
+        "avg_latency_ms": avg_latency * 1000,
         "random_baseline_deviation": random_baseline,
         "ref_frames": ref_frames,
         "ref_latents": ref_latents,
