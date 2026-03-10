@@ -228,6 +228,11 @@ class FeatCache:
     def set(self, key, value):
         self.cache[key] = value.clone()
 
+    def clone(self):
+        new = FeatCache(device=self.device, dtype=self.dtype, input_shape=(self.h, self.w))
+        new.cache = {k: v.clone() for k, v in self.cache.items()}
+        return new
+
 def cat_fwd_split(layer, x, y):
     z = torch.cat([x, y], 0)
     z = layer(z)
@@ -495,8 +500,12 @@ class StreamingOptDecoder(nn.Module):
         self.feat_cache.reset()
 
     #@torch.compile(mode='max-autotune', fullgraph=True)
-    def decode(self, x): # assumes x is [1,1,c,h,w]
-        return self.decoder(x.squeeze(1), self.feat_cache)
+    def decode_(self, x, feat_cache): # assumes x is [1,1,c,h,w]
+        return self.decoder(x.squeeze(1), feat_cache)
+
+    def decode(self, x):
+        #self.feat_cache = self.feat_cache.clone()
+        return self.decode_(x, self.feat_cache)
 
 class StreamingTAEHV(nn.Module):
     def __init__(self, taehv):
