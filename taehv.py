@@ -7,7 +7,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from tqdm.auto import tqdm
-from collections import namedtuple
+from collections import namedtuple, deque
 
 TWorkItem = namedtuple("TWorkItem", ("input_tensor", "block_index"))
 
@@ -77,7 +77,7 @@ def apply_model_with_memblocks_parallel(model, x, show_progress_bar):
     T = NT // N
     return x.view(N, T, C, H, W)
 
-def apply_model_with_memblocks_sequential_single_step(model, memory, work_queue, progress_bar=None):
+def apply_model_with_memblocks_sequential_single_step(model, memory, work_queue, progress_bar=None, layer_types=None):
     """
     Process the work queue (a graph traversal over blocks and timesteps)
     until an output frame is produced or the queue is empty.
@@ -86,21 +86,22 @@ def apply_model_with_memblocks_sequential_single_step(model, memory, work_queue,
     Returns N1CHW output tensor, or None if the queue needs more input.
     """
     while work_queue:
-        xt, i = work_queue.pop(0)
+        xt, i = work_queue.popleft()
         if progress_bar is not None and i == 0:
             progress_bar.update(1)
         if i == len(model):
             return xt.unsqueeze(1)
         b = model[i]
-        if isinstance(b, MemBlock):
+        btype = layer_types[i] if layer_types is not None else type(b)
+        if btype is MemBlock:
             # mem blocks are simple since we're visiting the graph in causal order
             if memory[i] is None:
-                xt_new = b(xt, xt * 0)
+                xt_new = b(xt, torch.zeros_like(xt))
             else:
                 xt_new = b(xt, memory[i])
             memory[i] = xt
-            work_queue.insert(0, TWorkItem(xt_new, i+1))
-        elif isinstance(b, TPool):
+            work_queue.appendleft(TWorkItem(xt_new, i+1))
+        elif btype is TPool:
             # pool blocks accumulate inputs until they have enough to pool
             if memory[i] is None:
                 memory[i] = []
@@ -111,15 +112,15 @@ def apply_model_with_memblocks_sequential_single_step(model, memory, work_queue,
                 N, C, H, W = xt.shape
                 xt = b(torch.cat(memory[i], 1).view(N*b.stride, C, H, W))
                 memory[i] = []
-                work_queue.insert(0, TWorkItem(xt, i+1))
-        elif isinstance(b, TGrow):
+                work_queue.appendleft(TWorkItem(xt, i+1))
+        elif btype is TGrow:
             xt = b(xt)
             NT, C, H, W = xt.shape
             for xt_next in reversed(xt.view(NT//b.stride, b.stride*C, H, W).chunk(b.stride, 1)):
-                work_queue.insert(0, TWorkItem(xt_next, i+1))
+                work_queue.appendleft(TWorkItem(xt_next, i+1))
         else:
             xt = b(xt)
-            work_queue.insert(0, TWorkItem(xt, i+1))
+            work_queue.appendleft(TWorkItem(xt, i+1))
     return None
 
 def apply_model_with_memblocks_sequential(model, x, show_progress_bar):
@@ -135,7 +136,7 @@ def apply_model_with_memblocks_sequential(model, x, show_progress_bar):
     Returns NTCHW tensor of output data.
     """
     assert x.ndim == 5, f"TAEHV operates on NTCHW tensors, but got {x.ndim}-dim tensor"
-    work_queue = [TWorkItem(xt, 0) for xt in x.unbind(1)]
+    work_queue = deque(TWorkItem(xt, 0) for xt in x.unbind(1))
     memory = [None] * len(model)
     progress_bar = tqdm(range(len(work_queue)), disable=not show_progress_bar)
     out = []
@@ -299,12 +300,14 @@ class StreamingTAEHV(nn.Module):
         """
         super().__init__()
         self.taehv = taehv
+        self.encoder_layer_types = [type(b) for b in taehv.encoder]
+        self.decoder_layer_types = [type(b) for b in taehv.decoder]
         self.reset()
 
     def reset(self):
         """Reset all internal state. Call this to start encoding/decoding a new stream."""
-        self.encoder_work_queue, self.encoder_memory = [], [None] * len(self.taehv.encoder)
-        self.decoder_work_queue, self.decoder_memory = [], [None] * len(self.taehv.decoder)
+        self.encoder_work_queue, self.encoder_memory = deque(), [None] * len(self.taehv.encoder)
+        self.decoder_work_queue, self.decoder_memory = deque(), [None] * len(self.taehv.decoder)
         self.n_frames_encoded, self.n_frames_decoded = 0, 0
         self._last_encoder_input_frame = None
 
@@ -326,7 +329,8 @@ class StreamingTAEHV(nn.Module):
             self.encoder_work_queue.extend(TWorkItem(xt, 0) for xt in x.unbind(1))
             self.n_frames_encoded += x.shape[1]
         xt = apply_model_with_memblocks_sequential_single_step(
-            self.taehv.encoder, self.encoder_memory, self.encoder_work_queue)
+            self.taehv.encoder, self.encoder_memory, self.encoder_work_queue,
+            layer_types=self.encoder_layer_types)
         return xt
 
     def decode(self, x=None):
@@ -349,7 +353,8 @@ class StreamingTAEHV(nn.Module):
             self.decoder_work_queue.extend(TWorkItem(xt, 0) for xt in x.unbind(1))
         while True:
             xt = apply_model_with_memblocks_sequential_single_step(
-                self.taehv.decoder, self.decoder_memory, self.decoder_work_queue)
+                self.taehv.decoder, self.decoder_memory, self.decoder_work_queue,
+                layer_types=self.decoder_layer_types)
             if xt is None:
                 return None
             self.n_frames_decoded += 1

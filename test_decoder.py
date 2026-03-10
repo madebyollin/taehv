@@ -64,7 +64,7 @@ def run():
     print(f"\nRunning {N_WARMUP} warmup calls...")
     for _ in range(N_WARMUP):
         latents = make_latents()
-        with torch.no_grad():
+        with torch.inference_mode():
             decode_streaming(latents)
 
     # --- Eval ---
@@ -75,7 +75,7 @@ def run():
 
     for i in range(N_EVAL):
         latents = make_latents()
-        with torch.no_grad():
+        with torch.inference_mode():
             t0 = time.perf_counter()
             frames = decode_streaming(latents)
             if DEVICE.type == "cuda":
@@ -102,7 +102,7 @@ def run():
     # --- Deviation metric ---
     # Baseline: decode a fresh random latent, measure deviation from ref
     print("\nComputing deviation metrics...")
-    with torch.no_grad():
+    with torch.inference_mode():
         random_latents = make_latents()
         random_frames = decode_streaming(random_latents)
 
