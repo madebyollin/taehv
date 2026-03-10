@@ -198,7 +198,7 @@ def apply_model_with_memblocks(model, x, parallel, show_progress_bar):
         return apply_model_with_memblocks_sequential(model, x, show_progress_bar)
 
 class FeatCache:
-    def __init__(self, input_shape=[32,64], device, dtype):
+    def __init__(self, device='cuda', dtype=torch.bfloat16, input_shape=[32,64]):
         self.cache = {}
         self.device = device
         self.dtype = dtype
@@ -211,15 +211,15 @@ class FeatCache:
     
     def reset(self):
         self.cache = {
-            "00" : get_tensor(1, self.n_f[0], self.h, self.w),
-            "01" : get_tensor(1, self.n_f[0], self.h, self.w),
-            "02" : get_tensor(1, self.n_f[0], self.h, self.w),
-            "10" : get_tensor(1, self.n_f[1], self.h*2, self.w*2),
-            "11" : get_tensor(1, self.n_f[1], self.h*2, self.w*2),
-            "12" : get_tensor(1, self.n_f[1], self.h*2, self.w*2),
-            "20" : get_tensor(1, self.n_f[2], self.h*4, self.w*4),
-            "21" : get_tensor(1, self.n_f[2], self.h*4, self.w*4),
-            "22" : get_tensor(1, self.n_f[2], self.h*4, self.w*4),
+            "00" : self.get_tensor(1, self.n_f[0], self.h, self.w),
+            "01" : self.get_tensor(1, self.n_f[0], self.h, self.w),
+            "02" : self.get_tensor(1, self.n_f[0], self.h, self.w),
+            "10" : self.get_tensor(1, self.n_f[1], self.h*2, self.w*2),
+            "11" : self.get_tensor(1, self.n_f[1], self.h*2, self.w*2),
+            "12" : self.get_tensor(1, self.n_f[1], self.h*2, self.w*2),
+            "20" : self.get_tensor(1, self.n_f[2], self.h*4, self.w*4),
+            "21" : self.get_tensor(1, self.n_f[2], self.h*4, self.w*4),
+            "22" : self.get_tensor(1, self.n_f[2], self.h*4, self.w*4),
         }
     
     def get(self, key):
@@ -371,8 +371,6 @@ class OptimizedDecoder(nn.Module):
         y = F.pixel_shuffle(y, self.patch_size)
         return y.clamp_(0, 1)
 
-
-
 class TAEHV(nn.Module):
     def __init__(self, checkpoint_path="taehv.pth", encoder_time_downscale=(True, True, False), decoder_time_upscale=(False, True, True), decoder_space_upscale=(True, True, True), patch_size=1, latent_channels=16):
         """Initialize pretrained TAEHV from the given checkpoint.
@@ -483,6 +481,20 @@ class TAEHV(nn.Module):
             # (cogvideox seems to pad at the start?), but for multiple-of-4 it's fine.
             return x
         return x[:, self.frames_to_trim:]
+
+class StreamingOptDecoder(nn.Module):
+    def __init__(self, taehv):
+        super().__init__()
+
+        self.decoder = OptimizedDecoder()
+        self.feat_cache = FeatCache()
+        self.decoder.from_taehv(taehv)
+
+    def reset(self):
+        self.feat_cache.reset()
+    
+    def decode(self, x): # assumes x is [1,1,c,h,w]
+        return self.decoder(x.squeeze(1), self.feat_cache)
 
 class StreamingTAEHV(nn.Module):
     def __init__(self, taehv):
