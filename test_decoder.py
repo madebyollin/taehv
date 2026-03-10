@@ -120,9 +120,11 @@ def run():
     with torch.inference_mode():
         random_frames = decode_streaming(make_latents())
 
-    n = min(len(ref_frames), len(random_frames), len(opt_frames))
+    trim = taehv.frames_to_trim
+    opt_frames_trimmed = opt_frames[trim:]
+    n = min(len(ref_frames), len(random_frames), len(opt_frames_trimmed))
     random_baseline = compute_deviation(ref_frames[:n], random_frames[:n])
-    opt_deviation   = compute_deviation(ref_frames[:n], opt_frames[:n])
+    opt_deviation   = compute_deviation(ref_frames[:n], opt_frames_trimmed[:n])
     self_deviation  = compute_deviation(ref_frames[:n], ref_frames[:n])
 
     print(f"  Self-deviation (sanity, should be 0): {self_deviation:.6f}")
