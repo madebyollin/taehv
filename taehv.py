@@ -321,23 +321,31 @@ class OptimizedDecoder(nn.Module):
 
         return opt
 
-    #@torch.compile(mode='max-autotune', fullgraph=True)
-    def forward_(self, z, c00, c01, c02, c10, c11, c12, c20, c21, c22):
+    @torch.compile(mode='max-autotune', fullgraph=True)
+    def forward(self, z, feat_cache):
         # z is [1, c, h, w]
         x0 = self.dec_pre(z)
 
         # First stage
-        x1 = self.mb_00(c00, x0)
-        x2 = self.mb_01(c01, x1)
-        x3 = self.mb_02(c02, x2)
+        x1 = self.mb_00(feat_cache.get("00"), x0)
+        x2 = self.mb_01(feat_cache.get("01"), x1)
+        x3 = self.mb_02(feat_cache.get("02"), x2)
+
+        feat_cache.set("00", x0)
+        feat_cache.set("01", x1)
+        feat_cache.set("02", x2)
 
         # Upsample and project
         x4 = self.proj_0(self.t_up_0(self.up_0(x3)))
 
         # Second stage
-        x5 = self.mb_10(c10, x4)
-        x6 = self.mb_11(c11, x5)
-        x7 = self.mb_12(c12, x6)
+        x5 = self.mb_10(feat_cache.get("10"), x4)
+        x6 = self.mb_11(feat_cache.get("11"), x5)
+        x7 = self.mb_12(feat_cache.get("12"), x6)
+
+        feat_cache.set("10", x4)
+        feat_cache.set("11", x5)
+        feat_cache.set("12", x6)
 
         # Upsample and project
         x8 = self.up_1(x7)
@@ -346,9 +354,13 @@ class OptimizedDecoder(nn.Module):
         x9_next = self.proj_1(x8_next)
 
         # Third stage
-        x10_prev, x10_next = self.mb_20(c20, x9_prev, x9_next)
-        x11_prev, x11_next = self.mb_21(c21, x10_prev, x10_next)
-        x12_prev, x12_next = self.mb_22(c22, x11_prev, x11_next)
+        x10_prev, x10_next = self.mb_20(feat_cache.get("20"), x9_prev, x9_next)
+        x11_prev, x11_next = self.mb_21(feat_cache.get("21"), x10_prev, x10_next)
+        x12_prev, x12_next = self.mb_22(feat_cache.get("22"), x11_prev, x11_next)
+
+        feat_cache.set("20", x9_next)
+        feat_cache.set("21", x10_next)
+        feat_cache.set("22", x11_next)
 
         # Upsample and project
         x13_prev = self.up_2(x12_prev)
@@ -362,29 +374,7 @@ class OptimizedDecoder(nn.Module):
         y = self.proj_2(y)
         y = self.dec_post(y)
         y = F.pixel_shuffle(y, self.patch_size)
-        return y.clamp_(0, 1), x0, x1, x2, x4, x5, x6, x9_next, x10_next, x11_next
-
-    def forward(self, z, feat_cache):
-        c00 = feat_cache.get("00")
-        c01 = feat_cache.get("01")
-        c02 = feat_cache.get("02")
-        c10 = feat_cache.get("10")
-        c11 = feat_cache.get("11")
-        c12 = feat_cache.get("12")
-        c20 = feat_cache.get("20")
-        c21 = feat_cache.get("21")
-        c22 = feat_cache.get("22")
-        y, c00, c01, c02, c10, c11, c12, c20, c21, c22 = self.forward_(z, c00, c01, c02, c10, c11, c12, c20, c21, c22)
-        feat_cache.set("00", c00)
-        feat_cache.set("01", c01)
-        feat_cache.set("02", c02)
-        feat_cache.set("10", c10)
-        feat_cache.set("11", c11)
-        feat_cache.set("12", c12)
-        feat_cache.set("20", c20)
-        feat_cache.set("21", c21)
-        feat_cache.set("22", c22)
-        return y
+        return y.clamp_(0, 1)
 
 class TAEHV(nn.Module):
     def __init__(self, checkpoint_path="taehv.pth", encoder_time_downscale=(True, True, False), decoder_time_upscale=(False, True, True), decoder_space_upscale=(True, True, True), patch_size=1, latent_channels=16):
@@ -508,12 +498,9 @@ class StreamingOptDecoder(nn.Module):
         self.feat_cache.reset()
 
     #@torch.compile(mode='max-autotune', fullgraph=True)
-    def decode_(self, x, feat_cache): # assumes x is [1,1,c,h,w]
-        return self.decoder(x.squeeze(1), feat_cache)
-
-    def decode(self, x):
+    def decode(self, x): # assumes x is [1,1,c,h,w]
         self.feat_cache = self.feat_cache.clone()
-        return self.decode_(x, self.feat_cache)
+        return self.decoder(x.squeeze(1), self.feat_cache).clone()
 
 class StreamingTAEHV(nn.Module):
     def __init__(self, taehv):
