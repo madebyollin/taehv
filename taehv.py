@@ -504,7 +504,7 @@ class StreamingOptDecoder(nn.Module):
         return self.decoder(x.squeeze(1), feat_cache)
 
     def decode(self, x):
-        #self.feat_cache = self.feat_cache.clone()
+        self.feat_cache = self.feat_cache.clone()
         return self.decode_(x, self.feat_cache)
 
 class StreamingTAEHV(nn.Module):
