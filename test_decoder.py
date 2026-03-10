@@ -117,20 +117,22 @@ def run():
     opt_fps, opt_latency, opt_frames, _           = benchmark(lambda l: decode_opt(l), "StreamingOptDecoder")
 
     # --- Deviation ---
+    # Decode the same latents with both decoders for a fair comparison
     print("\n--- Deviation Analysis ---")
     with torch.inference_mode():
-        random_frames = decode_streaming(make_latents())
+        random_frames   = decode_streaming(make_latents())
+        opt_same_frames = decode_opt(ref_latents)
 
     trim = taehv.frames_to_trim
-    opt_frames_trimmed = opt_frames[trim:]
-    n = min(len(ref_frames), len(random_frames), len(opt_frames_trimmed))
+    opt_same_trimmed = opt_same_frames[trim:]
+    n = min(len(ref_frames), len(random_frames), len(opt_same_trimmed))
     random_baseline = compute_deviation(ref_frames[:n], random_frames[:n])
-    opt_deviation   = compute_deviation(ref_frames[:n], opt_frames_trimmed[:n])
+    opt_deviation   = compute_deviation(ref_frames[:n], opt_same_trimmed[:n])
     self_deviation  = compute_deviation(ref_frames[:n], ref_frames[:n])
 
     print(f"  Self-deviation (sanity, should be 0): {self_deviation:.6f}")
     print(f"  Random baseline deviation:            {random_baseline:.6f}")
-    print(f"  OptimizedDecoder deviation:           {opt_deviation:.6f}")
+    print(f"  OptimizedDecoder deviation:           {opt_deviation:.6f}  (same latents as reference)")
     print()
     if opt_deviation < random_baseline * 0.1:
         print("  OptimizedDecoder output looks correct (deviation << random baseline).")
