@@ -12,8 +12,8 @@ DTYPE = torch.float16
 
 N_LATENT_FRAMES = 16   # T dimension of latents
 LATENT_H, LATENT_W = 32, 64
-N_WARMUP = 2
-N_EVAL = 5
+N_WARMUP = 5
+N_EVAL = 20
 
 taehv = TAEHV(checkpoint_path=CHECKPOINT).to(DEVICE, DTYPE)
 taehv.eval()
@@ -101,9 +101,12 @@ def benchmark(decode_fn, label):
 
         print(f"  Run {i+1}: {n_latents} latents in {elapsed:.3f}s → {fps:.2f} latents/s, {latency*1000:.2f}ms/latent")
 
-    avg_fps = sum(fps_list) / len(fps_list)
-    avg_latency = sum(latency_list) / len(latency_list)
-    print(f"Average latents/s: {avg_fps:.2f}")
+    # skip first run in case of recompilation hit
+    stable_fps = fps_list[1:]
+    stable_latency = latency_list[1:]
+    avg_fps = sum(stable_fps) / len(stable_fps)
+    avg_latency = sum(stable_latency) / len(stable_latency)
+    print(f"Average latents/s: {avg_fps:.2f}  (runs 2-{N_EVAL}, excl. first)")
     print(f"Average latency:   {avg_latency*1000:.2f}ms/latent")
 
     return avg_fps, avg_latency, ref_frames, ref_latents
