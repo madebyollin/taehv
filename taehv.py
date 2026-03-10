@@ -277,7 +277,7 @@ class OptimizedDecoder(nn.Module):
 
         Assumes the TAEHV decoder has decoder_time_upscale=(False, True, True) and
         decoder_space_upscale=(True, True, True), i.e. the taehv1_5 configuration.
-        The stride-1 TGrow at decoder[7] is dropped (it has no temporal effect).
+        The stride-1 TGrow at decoder[7] is a learned 1x1 projection (not a no-op).
 
         TAEHV decoder layout (indices):
           0:Clamp  1:conv  2:ReLU
@@ -294,7 +294,8 @@ class OptimizedDecoder(nn.Module):
         opt.mb_00.load_state_dict(dec[3].state_dict())
         opt.mb_01.load_state_dict(dec[4].state_dict())
         opt.mb_02.load_state_dict(dec[5].state_dict())
-        # dec[6] = Upsample (no params), dec[7] = TGrow(stride=1) (dropped)
+        # dec[6] = Upsample (no params)
+        opt.t_up_0.load_state_dict(dec[7].state_dict())       # TGrow(256, stride=1)
         opt.proj_0.load_state_dict(dec[8].state_dict())       # conv(256→128)
 
         opt.mb_10.load_state_dict(dec[9].state_dict())
