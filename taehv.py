@@ -483,16 +483,15 @@ class TAEHV(nn.Module):
         return x[:, self.frames_to_trim:]
 
 class StreamingOptDecoder(nn.Module):
-    def __init__(self, taehv):
+    def __init__(self, taehv, device='cuda', dtype=torch.float16, input_shape=(32, 64)):
         super().__init__()
 
-        self.decoder = OptimizedDecoder()
-        self.feat_cache = FeatCache()
-        self.decoder.from_taehv(taehv)
+        self.decoder = OptimizedDecoder.from_taehv(taehv)
+        self.feat_cache = FeatCache(device=device, dtype=dtype, input_shape=input_shape)
 
     def reset(self):
         self.feat_cache.reset()
-    
+
     def decode(self, x): # assumes x is [1,1,c,h,w]
         return self.decoder(x.squeeze(1), self.feat_cache)
 
