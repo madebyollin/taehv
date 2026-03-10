@@ -250,6 +250,7 @@ class OptimizedDecoder(nn.Module):
         self.mb_01 = OptMemBlock1x(n_f[0], n_f[0])
         self.mb_02 = OptMemBlock1x(n_f[0], n_f[0])
         self.up_0 = nn.Upsample(scale_factor=2)
+        self.t_up_0 = TGrow(n_f[0], 1)
         self.proj_0 = conv(n_f[0], n_f[1], bias=False)
 
         self.mb_10 = OptMemBlock1x(n_f[1], n_f[1])
@@ -329,7 +330,7 @@ class OptimizedDecoder(nn.Module):
         feat_cache.set("02", x2)
 
         # Upsample and project
-        x4 = self.proj_0(self.up_0(x3))
+        x4 = self.proj_0(self.t_up_0(self.up_0(x3)))
 
         # Second stage
         x5 = self.mb_10(feat_cache.get("10"), x4)
@@ -492,6 +493,7 @@ class StreamingOptDecoder(nn.Module):
     def reset(self):
         self.feat_cache.reset()
 
+    #@torch.compile(mode='max-autotune', fullgraph=True)
     def decode(self, x): # assumes x is [1,1,c,h,w]
         return self.decoder(x.squeeze(1), self.feat_cache)
 

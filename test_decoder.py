@@ -18,7 +18,8 @@ N_EVAL = 5
 taehv = TAEHV(checkpoint_path=CHECKPOINT).to(DEVICE, DTYPE)
 taehv.eval()
 streaming = StreamingTAEHV(taehv)
-opt_streaming = StreamingOptDecoder(taehv, device=DEVICE, dtype=DTYPE)
+opt_streaming = StreamingOptDecoder(taehv, device=DEVICE, dtype=DTYPE).to(DEVICE, DTYPE)
+opt_streaming.eval()
 
 
 def make_latents():
