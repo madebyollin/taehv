@@ -27,6 +27,21 @@ class MemBlock(nn.Module):
     def forward(self, x, past):
         return self.act(self.conv(torch.cat([x, past], 1)) + self.skip(x))
 
+class WideMemBlock(nn.Module):
+    def __init__(self, n_in, n_out):
+        super().__init__()
+        groups = max(1, n_out//64)
+        assert n_out % groups == 0, f"{n_out} % {groups} ??"
+        self.conv = nn.Sequential(
+            nn.Conv2d(n_in * 2, n_out, 1), nn.ReLU(inplace=True),
+            conv(n_out, n_out, groups=groups), nn.ReLU(inplace=True),
+            nn.Conv2d(n_out, n_out, 1), nn.ReLU(inplace=True),
+            conv(n_out, n_out, groups=groups))
+        self.skip = nn.Conv2d(n_in, n_out, 1, bias=False) if n_in != n_out else nn.Identity()
+        self.act = nn.ReLU(inplace=True)
+    def forward(self, x, past):
+        return self.act(self.conv(torch.cat([x, past], 1)) + self.skip(x))
+
 class TPool(nn.Module):
     def __init__(self, n_f, stride):
         super().__init__()
@@ -64,7 +79,7 @@ def apply_model_with_memblocks_parallel(model, x, show_progress_bar):
 
     # parallel over input timesteps, iterate over blocks
     for b in tqdm(model, disable=not show_progress_bar):
-        if isinstance(b, MemBlock):
+        if isinstance(b, (MemBlock, WideMemBlock)):
             NT, C, H, W = x.shape
             T = NT // N
             _x = x.reshape(N, T, C, H, W)
@@ -92,7 +107,7 @@ def apply_model_with_memblocks_sequential_single_step(model, memory, work_queue,
         if i == len(model):
             return xt.unsqueeze(1)
         b = model[i]
-        if isinstance(b, MemBlock):
+        if isinstance(b, (MemBlock, WideMemBlock)):
             # mem blocks are simple since we're visiting the graph in causal order
             if memory[i] is None:
                 xt_new = b(xt, xt * 0)
@@ -203,6 +218,16 @@ class TAEHV(nn.Module):
             MemBlock(n_f[2], n_f[2]), MemBlock(n_f[2], n_f[2]), MemBlock(n_f[2], n_f[2]), nn.Upsample(scale_factor=2 if decoder_space_upscale[2] else 1), TGrow(n_f[2], 2 if decoder_time_upscale[2] else 1), conv(n_f[2], n_f[3], bias=False),
             nn.ReLU(inplace=True), conv(n_f[3], self.image_channels*self.patch_size**2),
         )
+        if checkpoint_path is not None and "taeltx2_3_wide" in checkpoint_path:
+            n_f = [1024, 512, 256, 64]
+            self.decoder = nn.Sequential(
+                Clamp(), conv(self.latent_channels, n_f[0]), nn.ReLU(inplace=True),
+                WideMemBlock(n_f[0], n_f[0]), WideMemBlock(n_f[0], n_f[0]), WideMemBlock(n_f[0], n_f[0]), nn.Upsample(scale_factor=2 if decoder_space_upscale[0] else 1), TGrow(n_f[0], 2 if decoder_time_upscale[0] else 1), conv(n_f[0], n_f[1], bias=False),
+                WideMemBlock(n_f[1], n_f[1]), WideMemBlock(n_f[1], n_f[1]), WideMemBlock(n_f[1], n_f[1]), nn.Upsample(scale_factor=2 if decoder_space_upscale[1] else 1), TGrow(n_f[1], 2 if decoder_time_upscale[1] else 1), conv(n_f[1], n_f[2], bias=False),
+                WideMemBlock(n_f[2], n_f[2]), WideMemBlock(n_f[2], n_f[2]), WideMemBlock(n_f[2], n_f[2]), nn.Upsample(scale_factor=2 if decoder_space_upscale[2] else 1), TGrow(n_f[2], 2 if decoder_time_upscale[2] else 1), conv(n_f[2], n_f[3], bias=False),
+                nn.ReLU(inplace=True), conv(n_f[3], self.image_channels*self.patch_size**2),
+            )
+
         # computed properties
         self.t_downscale = 2**sum(t.stride == 2 for t in self.encoder if isinstance(t, TPool))
         self.t_upscale = 2**sum(t.stride == 2 for t in self.decoder if isinstance(t, TGrow))
