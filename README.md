@@ -42,6 +42,7 @@ To use TAEHV with different video models, you can load the different model weigh
 * For **Open-Sora 1.3**, load the `taeos1_3` weights.
 * For **LTX-2**, load the `taeltx_2` weights ([example notebook](./examples/TAELTX2_Encoding_Decoding_Demo.ipynb)).
 * For **LTX-2.3**, load the `taeltx2_3` weights
+    * The standard TAE decoder for LTX2.3 has blurry outputs (see [thread](https://github.com/madebyollin/taehv/issues/20#issuecomment-4048513703)) so I also trained a larger, less-blurry `taeltx2_3_wide` variant. Those `taeltx2_3_wide` weights are [here](https://github.com/madebyollin/taehv/blob/2026_03_11_taeltx23_wide/taeltx2_3_wide.pth) and **ComfyUI-bleh** has `taeltx2_3_wide`-compatible previewing code [here](https://github.com/blepping/ComfyUI-bleh/pull/37).
 * For **Mochi 1** and **SVD** (which use different architectures), see the other repos [TAEM1](https://github.com/madebyollin/taem1) and [TAESDV](https://github.com/madebyollin/taesdv).
 
 The main model weight `.pth` files are in the repository root directory. Converted `.safetensors` files are located in the [safetensors](./safetensors) subdirectory.
