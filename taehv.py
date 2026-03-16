@@ -7,7 +7,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from tqdm.auto import tqdm
-from collections import namedtuple
+from collections import namedtuple, deque
 
 TWorkItem = namedtuple("TWorkItem", ("input_tensor", "block_index"))
 
@@ -24,6 +24,14 @@ class MemBlock(nn.Module):
         self.conv = nn.Sequential(conv(n_in * 2, n_out), nn.ReLU(inplace=True), conv(n_out, n_out), nn.ReLU(inplace=True), conv(n_out, n_out))
         self.skip = nn.Conv2d(n_in, n_out, 1, bias=False) if n_in != n_out else nn.Identity()
         self.act = nn.ReLU(inplace=True)
+    
+    def pair_forward(self, x, y):
+        """
+        Conceptually, x is past, y is future
+        information flows into the future state
+        """
+        return self.act(self.conv(torch.cat([y, x], 1)) + self.skip(y))
+
     def forward(self, x, past):
         return self.act(self.conv(torch.cat([x, past], 1)) + self.skip(x))
 
@@ -32,6 +40,7 @@ class TPool(nn.Module):
         super().__init__()
         self.stride = stride
         self.conv = nn.Conv2d(n_f*stride,n_f, 1, bias=False)
+
     def forward(self, x):
         _NT, C, H, W = x.shape
         return self.conv(x.reshape(-1, self.stride * C, H, W))
@@ -41,10 +50,34 @@ class TGrow(nn.Module):
         super().__init__()
         self.stride = stride
         self.conv = nn.Conv2d(n_f, n_f*stride, 1, bias=False)
+
     def forward(self, x):
         _NT, C, H, W = x.shape
         x = self.conv(x)
         return x.reshape(-1, C, H, W)
+
+class OptMemBlock1x(MemBlock):
+    def forward(self, x0, x1):
+        # x is bnchw
+        return self.pair_forward(x0, x1)
+
+class OptMemBlock2x(MemBlock):
+    def forward(self, x0, x1, x2):
+        # x is bnchw, we assume b is 1
+        past = torch.cat([x0, x1], 0)
+        future = torch.cat([x1, x2], 0)
+        y = self.pair_forward(past, future)
+        y1 = y[:1]
+        y2 = y[1:]
+        return y1, y2
+
+class OptTGrow(TGrow):
+    def forward(self, x):
+        # bchw
+        n,c,h,w = x.shape
+        x = self.conv(x) # -> b(2c)hw
+        x = x.reshape(n, 2, c, h, w)
+        return x.unbind(1)
 
 def apply_model_with_memblocks_parallel(model, x, show_progress_bar):
     """
@@ -77,7 +110,7 @@ def apply_model_with_memblocks_parallel(model, x, show_progress_bar):
     T = NT // N
     return x.view(N, T, C, H, W)
 
-def apply_model_with_memblocks_sequential_single_step(model, memory, work_queue, progress_bar=None):
+def apply_model_with_memblocks_sequential_single_step(model, memory, work_queue, progress_bar=None, layer_types=None):
     """
     Process the work queue (a graph traversal over blocks and timesteps)
     until an output frame is produced or the queue is empty.
@@ -86,21 +119,22 @@ def apply_model_with_memblocks_sequential_single_step(model, memory, work_queue,
     Returns N1CHW output tensor, or None if the queue needs more input.
     """
     while work_queue:
-        xt, i = work_queue.pop(0)
+        xt, i = work_queue.popleft()
         if progress_bar is not None and i == 0:
             progress_bar.update(1)
         if i == len(model):
             return xt.unsqueeze(1)
         b = model[i]
-        if isinstance(b, MemBlock):
+        btype = layer_types[i] if layer_types is not None else type(b)
+        if btype is MemBlock:
             # mem blocks are simple since we're visiting the graph in causal order
             if memory[i] is None:
-                xt_new = b(xt, xt * 0)
+                xt_new = b(xt, torch.zeros_like(xt))
             else:
                 xt_new = b(xt, memory[i])
             memory[i] = xt
-            work_queue.insert(0, TWorkItem(xt_new, i+1))
-        elif isinstance(b, TPool):
+            work_queue.appendleft(TWorkItem(xt_new, i+1))
+        elif btype is TPool:
             # pool blocks accumulate inputs until they have enough to pool
             if memory[i] is None:
                 memory[i] = []
@@ -111,15 +145,15 @@ def apply_model_with_memblocks_sequential_single_step(model, memory, work_queue,
                 N, C, H, W = xt.shape
                 xt = b(torch.cat(memory[i], 1).view(N*b.stride, C, H, W))
                 memory[i] = []
-                work_queue.insert(0, TWorkItem(xt, i+1))
-        elif isinstance(b, TGrow):
+                work_queue.appendleft(TWorkItem(xt, i+1))
+        elif btype is TGrow:
             xt = b(xt)
             NT, C, H, W = xt.shape
             for xt_next in reversed(xt.view(NT//b.stride, b.stride*C, H, W).chunk(b.stride, 1)):
-                work_queue.insert(0, TWorkItem(xt_next, i+1))
+                work_queue.appendleft(TWorkItem(xt_next, i+1))
         else:
             xt = b(xt)
-            work_queue.insert(0, TWorkItem(xt, i+1))
+            work_queue.appendleft(TWorkItem(xt, i+1))
     return None
 
 def apply_model_with_memblocks_sequential(model, x, show_progress_bar):
@@ -135,7 +169,7 @@ def apply_model_with_memblocks_sequential(model, x, show_progress_bar):
     Returns NTCHW tensor of output data.
     """
     assert x.ndim == 5, f"TAEHV operates on NTCHW tensors, but got {x.ndim}-dim tensor"
-    work_queue = [TWorkItem(xt, 0) for xt in x.unbind(1)]
+    work_queue = deque(TWorkItem(xt, 0) for xt in x.unbind(1))
     memory = [None] * len(model)
     progress_bar = tqdm(range(len(work_queue)), disable=not show_progress_bar)
     out = []
@@ -162,6 +196,185 @@ def apply_model_with_memblocks(model, x, parallel, show_progress_bar):
         return apply_model_with_memblocks_parallel(model, x, show_progress_bar)
     else:
         return apply_model_with_memblocks_sequential(model, x, show_progress_bar)
+
+class FeatCache:
+    def __init__(self, device='cuda', dtype=torch.bfloat16, input_shape=[32,64]):
+        self.cache = {}
+        self.device = device
+        self.dtype = dtype
+        self.h, self.w = input_shape
+        self.n_f = [256, 128, 64, 64]
+        self.reset()
+    
+    def get_tensor(self, *shape):
+        return torch.zeros(shape, device=self.device, dtype=self.dtype)
+    
+    def reset(self):
+        self.cache = {
+            "00" : self.get_tensor(1, self.n_f[0], self.h, self.w),
+            "01" : self.get_tensor(1, self.n_f[0], self.h, self.w),
+            "02" : self.get_tensor(1, self.n_f[0], self.h, self.w),
+            "10" : self.get_tensor(1, self.n_f[1], self.h*2, self.w*2),
+            "11" : self.get_tensor(1, self.n_f[1], self.h*2, self.w*2),
+            "12" : self.get_tensor(1, self.n_f[1], self.h*2, self.w*2),
+            "20" : self.get_tensor(1, self.n_f[2], self.h*4, self.w*4),
+            "21" : self.get_tensor(1, self.n_f[2], self.h*4, self.w*4),
+            "22" : self.get_tensor(1, self.n_f[2], self.h*4, self.w*4),
+        }
+    
+    def get(self, key):
+        return self.cache[key]
+    
+    def set(self, key, value):
+        self.cache[key] = value.clone()
+
+    def clone(self):
+        new = FeatCache(device=self.device, dtype=self.dtype, input_shape=(self.h, self.w))
+        new.cache = {k: v.clone() for k, v in self.cache.items()}
+        return new
+
+def cat_fwd_split(layer, x, y):
+    z = torch.cat([x, y], 0)
+    z = layer(z)
+    return z.split(1, dim = 0)
+    
+class OptimizedDecoder(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+        n_f = [256, 128, 64, 64]
+        self.latent_channels = 32
+        self.patch_size = 2
+        self.image_channels = 3
+
+        self.dec_pre = nn.Sequential(
+            Clamp(), conv(self.latent_channels, n_f[0]), nn.ReLU(inplace=True),
+        )
+
+        self.mb_00 = OptMemBlock1x(n_f[0], n_f[0])
+        self.mb_01 = OptMemBlock1x(n_f[0], n_f[0])
+        self.mb_02 = OptMemBlock1x(n_f[0], n_f[0])
+        self.up_0 = nn.Upsample(scale_factor=2)
+        self.t_up_0 = TGrow(n_f[0], 1)
+        self.proj_0 = conv(n_f[0], n_f[1], bias=False)
+
+        self.mb_10 = OptMemBlock1x(n_f[1], n_f[1])
+        self.mb_11 = OptMemBlock1x(n_f[1], n_f[1])
+        self.mb_12 = OptMemBlock1x(n_f[1], n_f[1])
+        self.up_1 = nn.Upsample(scale_factor=2)
+        self.t_up_1 = OptTGrow(n_f[1], 2)
+        self.proj_1 = conv(n_f[1], n_f[2], bias=False)
+
+        self.mb_20 = OptMemBlock2x(n_f[2], n_f[2])
+        self.mb_21 = OptMemBlock2x(n_f[2], n_f[2])
+        self.mb_22 = OptMemBlock2x(n_f[2], n_f[2])
+        self.up_2 = nn.Upsample(scale_factor=2)
+        self.t_up_2 = OptTGrow(n_f[2], 2)
+        self.proj_2 = conv(n_f[2], n_f[3], bias=False)
+
+        self.dec_post = nn.Sequential(
+            nn.ReLU(inplace=True), conv(n_f[3], self.image_channels * self.patch_size**2),
+        )
+
+    @classmethod
+    def from_taehv(cls, taehv):
+        """Create an OptimizedDecoder with weights copied from a TAEHV instance.
+
+        Assumes the TAEHV decoder has decoder_time_upscale=(False, True, True) and
+        decoder_space_upscale=(True, True, True), i.e. the taehv1_5 configuration.
+        The stride-1 TGrow at decoder[7] is a learned 1x1 projection (not a no-op).
+
+        TAEHV decoder layout (indices):
+          0:Clamp  1:conv  2:ReLU
+          3:MB  4:MB  5:MB  6:Upsample  7:TGrow(stride=1)[dropped]  8:conv
+          9:MB  10:MB  11:MB  12:Upsample  13:TGrow(stride=2)  14:conv
+          15:MB  16:MB  17:MB  18:Upsample  19:TGrow(stride=2)  20:conv
+          21:ReLU  22:conv
+        """
+        opt = cls()
+        dec = taehv.decoder
+
+        opt.dec_pre[1].load_state_dict(dec[1].state_dict())   # conv(latent→256)
+
+        opt.mb_00.load_state_dict(dec[3].state_dict())
+        opt.mb_01.load_state_dict(dec[4].state_dict())
+        opt.mb_02.load_state_dict(dec[5].state_dict())
+        # dec[6] = Upsample (no params)
+        opt.t_up_0.load_state_dict(dec[7].state_dict())       # TGrow(256, stride=1)
+        opt.proj_0.load_state_dict(dec[8].state_dict())       # conv(256→128)
+
+        opt.mb_10.load_state_dict(dec[9].state_dict())
+        opt.mb_11.load_state_dict(dec[10].state_dict())
+        opt.mb_12.load_state_dict(dec[11].state_dict())
+        # dec[12] = Upsample (no params)
+        opt.t_up_1.load_state_dict(dec[13].state_dict())      # TGrow(128, stride=2)
+        opt.proj_1.load_state_dict(dec[14].state_dict())      # conv(128→64)
+
+        opt.mb_20.load_state_dict(dec[15].state_dict())
+        opt.mb_21.load_state_dict(dec[16].state_dict())
+        opt.mb_22.load_state_dict(dec[17].state_dict())
+        # dec[18] = Upsample (no params)
+        opt.t_up_2.load_state_dict(dec[19].state_dict())      # TGrow(64, stride=2)
+        opt.proj_2.load_state_dict(dec[20].state_dict())      # conv(64→64)
+
+        opt.dec_post[1].load_state_dict(dec[22].state_dict()) # conv(64→out)
+
+        return opt
+
+    @torch.compile(mode='max-autotune', fullgraph=True)
+    def forward(self, z, feat_cache):
+        # z is [1, c, h, w]
+        x0 = self.dec_pre(z)
+
+        # First stage
+        x1 = self.mb_00(feat_cache.get("00"), x0)
+        x2 = self.mb_01(feat_cache.get("01"), x1)
+        x3 = self.mb_02(feat_cache.get("02"), x2)
+
+        feat_cache.set("00", x0)
+        feat_cache.set("01", x1)
+        feat_cache.set("02", x2)
+
+        # Upsample and project
+        x4 = self.proj_0(self.t_up_0(self.up_0(x3)))
+
+        # Second stage
+        x5 = self.mb_10(feat_cache.get("10"), x4)
+        x6 = self.mb_11(feat_cache.get("11"), x5)
+        x7 = self.mb_12(feat_cache.get("12"), x6)
+
+        feat_cache.set("10", x4)
+        feat_cache.set("11", x5)
+        feat_cache.set("12", x6)
+
+        # Upsample and project
+        x8 = self.up_1(x7)
+        x8_prev, x8_next = self.t_up_1(x8)
+        x9_prev = self.proj_1(x8_prev)
+        x9_next = self.proj_1(x8_next)
+
+        # Third stage
+        x10_prev, x10_next = self.mb_20(feat_cache.get("20"), x9_prev, x9_next)
+        x11_prev, x11_next = self.mb_21(feat_cache.get("21"), x10_prev, x10_next)
+        x12_prev, x12_next = self.mb_22(feat_cache.get("22"), x11_prev, x11_next)
+
+        feat_cache.set("20", x9_next)
+        feat_cache.set("21", x10_next)
+        feat_cache.set("22", x11_next)
+
+        # Upsample and project
+        x13_prev = self.up_2(x12_prev)
+        x13_next = self.up_2(x12_next)
+        
+        # Final stage, mostly just projections, no cache
+        y_0, y_1 = self.t_up_2(x13_prev)
+        y_2, y_3 = self.t_up_2(x13_next)
+
+        y = torch.cat([y_0, y_1, y_2, y_3], 0)
+        y = self.proj_2(y)
+        y = self.dec_post(y)
+        y = F.pixel_shuffle(y, self.patch_size)
+        return y.clamp_(0, 1)
 
 class TAEHV(nn.Module):
     def __init__(self, checkpoint_path="taehv.pth", encoder_time_downscale=(True, True, False), decoder_time_upscale=(False, True, True), decoder_space_upscale=(True, True, True), patch_size=1, latent_channels=16):
@@ -274,6 +487,21 @@ class TAEHV(nn.Module):
             return x
         return x[:, self.frames_to_trim:]
 
+class StreamingOptDecoder(nn.Module):
+    def __init__(self, taehv, device='cuda', dtype=torch.float16, input_shape=(32, 64)):
+        super().__init__()
+
+        self.decoder = OptimizedDecoder.from_taehv(taehv)
+        self.feat_cache = FeatCache(device=device, dtype=dtype, input_shape=input_shape)
+
+    def reset(self):
+        self.feat_cache.reset()
+
+    #@torch.compile(mode='max-autotune', fullgraph=True)
+    def decode(self, x): # assumes x is [1,1,c,h,w]
+        self.feat_cache = self.feat_cache.clone()
+        return self.decoder(x.squeeze(1), self.feat_cache).clone()
+
 class StreamingTAEHV(nn.Module):
     def __init__(self, taehv):
         """Streaming wrapper around TAEHV for real-time use-cases (where not all inputs are available immediately).
@@ -299,12 +527,14 @@ class StreamingTAEHV(nn.Module):
         """
         super().__init__()
         self.taehv = taehv
+        self.encoder_layer_types = [type(b) for b in taehv.encoder]
+        self.decoder_layer_types = [type(b) for b in taehv.decoder]
         self.reset()
 
     def reset(self):
         """Reset all internal state. Call this to start encoding/decoding a new stream."""
-        self.encoder_work_queue, self.encoder_memory = [], [None] * len(self.taehv.encoder)
-        self.decoder_work_queue, self.decoder_memory = [], [None] * len(self.taehv.decoder)
+        self.encoder_work_queue, self.encoder_memory = deque(), [None] * len(self.taehv.encoder)
+        self.decoder_work_queue, self.decoder_memory = deque(), [None] * len(self.taehv.decoder)
         self.n_frames_encoded, self.n_frames_decoded = 0, 0
         self._last_encoder_input_frame = None
 
@@ -326,7 +556,8 @@ class StreamingTAEHV(nn.Module):
             self.encoder_work_queue.extend(TWorkItem(xt, 0) for xt in x.unbind(1))
             self.n_frames_encoded += x.shape[1]
         xt = apply_model_with_memblocks_sequential_single_step(
-            self.taehv.encoder, self.encoder_memory, self.encoder_work_queue)
+            self.taehv.encoder, self.encoder_memory, self.encoder_work_queue,
+            layer_types=self.encoder_layer_types)
         return xt
 
     def decode(self, x=None):
@@ -349,7 +580,8 @@ class StreamingTAEHV(nn.Module):
             self.decoder_work_queue.extend(TWorkItem(xt, 0) for xt in x.unbind(1))
         while True:
             xt = apply_model_with_memblocks_sequential_single_step(
-                self.taehv.decoder, self.decoder_memory, self.decoder_work_queue)
+                self.taehv.decoder, self.decoder_memory, self.decoder_work_queue,
+                layer_types=self.decoder_layer_types)
             if xt is None:
                 return None
             self.n_frames_decoded += 1
