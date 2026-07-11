@@ -31,10 +31,12 @@ See the [profiling notebook](./examples/TAEHV_Profiling.ipynb) for details on th
 
 To use TAEHV with different video models, you can load the different model weight files from this repo:
 
-* For **Hunyuan Video 1.5**, load the `taehv1_5` weights ([example notebook](./examples/TAEHV1.5_Encoding_Decoding_Demo.ipynb))
+* For **Hunyuan Video 1.5**, load the `taehv1_5` weights ([example notebook](./examples/TAEHV1.5_Encoding_Decoding_Demo.ipynb)).
+    * You can also use `taehv1_5_super` to get higher-quality output at the cost of slightly more compute.
 * For **Wan 2.1**, load the `taew2_1` weights (see the [Wan 2.1 example notebook](./examples/TAEW2.1_T2I_Demo.ipynb)).
 * For **Wan 2.2**, load different files depending on model scale:
   * For **Wan 2.2 5B**, load the `taew2_2` weights ([example notebook](examples/TAEW2.2_T2I_Demo.ipynb)).
+    * You can also use `taew2_2_super` to get higher-quality output at the cost of slightly more compute.
   * For **Wan 2.2 14B**, load the `taew2_1` weights since Wan 2.2 14B [still uses the older Wan 2.1 VAE](https://github.com/Wan-Video/Wan2.2/blob/main/wan/configs/wan_t2v_A14B.py#L16).
 * for **Qwen Image**, load the `taew2_1` weights (since Qwen Image uses the Wan 2.1 VAE encoder).
 * For **CogVideoX**,  load the `taecvx` weights ([example notebook](./examples/TAECVX_T2I_Demo.ipynb)).
@@ -106,6 +108,10 @@ For live / real-time scenarios (like video-to-video or world modeling), you'll w
 You can see example `StreamingTAEHV` usage in the [streaming demo notebook](./examples/TAEHV1.5_Streaming_Demo.ipynb) or in [`taehv.py`](./taehv.py)'s `StreamingTAEHV` docstrings.
 
 ![Streaming demo notebook screen recording](https://github.com/user-attachments/assets/90f4cb9f-c056-4c7e-926f-2b10cf072c73)
+
+## How can I make TAEHV decode higher-quality videos?
+
+For `taehv1_5` and `taew2_2`, you can use the larger `taehv1_5_super` and `taew2_2_super` weights to get higher quality video output at the cost of slightly increased compute (and higher parameter count). Thsee `super` models are intended for realtime world modeling and video usecases where TAEHV output serves as the final output (rather than a temporary preview).
 
 ## How can I cite TAEHV in a publication?
 

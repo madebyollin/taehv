@@ -27,6 +27,18 @@ class MemBlock(nn.Module):
     def forward(self, x, past):
         return self.act(self.conv(torch.cat([x, past], 1)) + self.skip(x))
 
+class SuperMemBlock(nn.Module):
+    """MemBlock variant used by the Super decoder (ConvNeXt-style: 7x7 depthwise conv + inverted bottleneck)."""
+    def __init__(self, n_f):
+        super().__init__()
+        self.conv = nn.Sequential(
+            nn.Conv2d(n_f*2, n_f*2, 7, padding=3, groups=n_f*2, bias=False),
+            nn.Conv2d(n_f*2, n_f*4, 1), nn.ReLU(inplace=True),
+            nn.Conv2d(n_f*4, n_f, 1, bias=False),
+        )
+    def forward(self, x, past):
+        return self.conv(torch.cat([x, past], 1)) + x
+
 class TPool(nn.Module):
     def __init__(self, n_f, stride):
         super().__init__()
@@ -64,7 +76,7 @@ def apply_model_with_memblocks_parallel(model, x, show_progress_bar):
 
     # parallel over input timesteps, iterate over blocks
     for b in tqdm(model, disable=not show_progress_bar):
-        if isinstance(b, MemBlock):
+        if isinstance(b, (MemBlock, SuperMemBlock)):
             NT, C, H, W = x.shape
             T = NT // N
             _x = x.reshape(N, T, C, H, W)
@@ -92,7 +104,7 @@ def apply_model_with_memblocks_sequential_single_step(model, memory, work_queue,
         if i == len(model):
             return xt.unsqueeze(1)
         b = model[i]
-        if isinstance(b, MemBlock):
+        if isinstance(b, (MemBlock, SuperMemBlock)):
             # mem blocks are simple since we're visiting the graph in causal order
             if memory[i] is None:
                 xt_new = b(xt, xt * 0)
@@ -164,7 +176,7 @@ def apply_model_with_memblocks(model, x, parallel, show_progress_bar):
         return apply_model_with_memblocks_sequential(model, x, show_progress_bar)
 
 class TAEHV(nn.Module):
-    def __init__(self, checkpoint_path="taehv.pth", encoder_time_downscale=(True, True, False), decoder_time_upscale=(False, True, True), decoder_space_upscale=(True, True, True), patch_size=1, latent_channels=16):
+    def __init__(self, checkpoint_path="taehv.pth", encoder_time_downscale=(True, True, False), decoder_time_upscale=(False, True, True), decoder_space_upscale=(True, True, True), patch_size=1, latent_channels=16, arch_variant=None):
         """Initialize pretrained TAEHV from the given checkpoint.
 
         Arg:
@@ -174,6 +186,7 @@ class TAEHV(nn.Module):
             decoder_space_upscale: whether spatial upsampling is enabled for each block. upsampling can be disabled for a cheaper preview.
             patch_size: input/output pixelshuffle patch-size for this model.
             latent_channels: number of latent channels (z dim) for this model.
+            arch_variant: decoder architecture variant. None (base) or "super" (higher-quality, ~2x decoder params). Autodetected from filename if None.
         """
         super().__init__()
         self.patch_size = patch_size
@@ -188,6 +201,9 @@ class TAEHV(nn.Module):
             self.patch_size, self.latent_channels = 2, 32
         if checkpoint_path is not None and "taeltx" in checkpoint_path: # same for both 2 and 2.3
             self.patch_size, self.latent_channels, encoder_time_downscale, decoder_time_upscale = 4, 128, (True, True, True), (True, True, True)
+        if arch_variant is None and checkpoint_path is not None and "_super" in checkpoint_path:
+            arch_variant = "super"
+        assert arch_variant in (None, "super"), f"unrecognized arch_variant {arch_variant!r}"
         self.encoder = nn.Sequential(
             conv(self.image_channels*self.patch_size**2, 64), nn.ReLU(inplace=True),
             TPool(64, 2 if encoder_time_downscale[0] else 1), conv(64, 64, stride=2, bias=False), MemBlock(64, 64), MemBlock(64, 64), MemBlock(64, 64),
@@ -195,14 +211,24 @@ class TAEHV(nn.Module):
             TPool(64, 2 if encoder_time_downscale[2] else 1), conv(64, 64, stride=2, bias=False), MemBlock(64, 64), MemBlock(64, 64), MemBlock(64, 64),
             conv(64, self.latent_channels),
         )
-        n_f = [256, 128, 64, 64]
-        self.decoder = nn.Sequential(
-            Clamp(), conv(self.latent_channels, n_f[0]), nn.ReLU(inplace=True),
-            MemBlock(n_f[0], n_f[0]), MemBlock(n_f[0], n_f[0]), MemBlock(n_f[0], n_f[0]), nn.Upsample(scale_factor=2 if decoder_space_upscale[0] else 1), TGrow(n_f[0], 2 if decoder_time_upscale[0] else 1), conv(n_f[0], n_f[1], bias=False),
-            MemBlock(n_f[1], n_f[1]), MemBlock(n_f[1], n_f[1]), MemBlock(n_f[1], n_f[1]), nn.Upsample(scale_factor=2 if decoder_space_upscale[1] else 1), TGrow(n_f[1], 2 if decoder_time_upscale[1] else 1), conv(n_f[1], n_f[2], bias=False),
-            MemBlock(n_f[2], n_f[2]), MemBlock(n_f[2], n_f[2]), MemBlock(n_f[2], n_f[2]), nn.Upsample(scale_factor=2 if decoder_space_upscale[2] else 1), TGrow(n_f[2], 2 if decoder_time_upscale[2] else 1), conv(n_f[2], n_f[3], bias=False),
-            nn.ReLU(inplace=True), conv(n_f[3], self.image_channels*self.patch_size**2),
-        )
+        if arch_variant == "super":
+            n_f = [512, 256, 128, 64]
+            self.decoder = nn.Sequential(
+                nn.Conv2d(self.latent_channels, n_f[0], 1, bias=False),
+                SuperMemBlock(n_f[0]), SuperMemBlock(n_f[0]), SuperMemBlock(n_f[0]), conv(n_f[0], n_f[1]*(2 if decoder_space_upscale[0] else 1)**2), nn.ReLU(inplace=True), nn.PixelShuffle(2 if decoder_space_upscale[0] else 1), TGrow(n_f[1], 2 if decoder_time_upscale[0] else 1),
+                SuperMemBlock(n_f[1]), SuperMemBlock(n_f[1]), SuperMemBlock(n_f[1]), conv(n_f[1], n_f[2]*(2 if decoder_space_upscale[1] else 1)**2), nn.ReLU(inplace=True), nn.PixelShuffle(2 if decoder_space_upscale[1] else 1), TGrow(n_f[2], 2 if decoder_time_upscale[1] else 1),
+                SuperMemBlock(n_f[2]), SuperMemBlock(n_f[2]), SuperMemBlock(n_f[2]), conv(n_f[2], n_f[3]*(2 if decoder_space_upscale[2] else 1)**2), nn.ReLU(inplace=True), nn.PixelShuffle(2 if decoder_space_upscale[2] else 1), TGrow(n_f[3], 2 if decoder_time_upscale[2] else 1),
+                conv(n_f[3], self.image_channels*self.patch_size**2),
+            )
+        else:
+            n_f = [256, 128, 64, 64]
+            self.decoder = nn.Sequential(
+                Clamp(), conv(self.latent_channels, n_f[0]), nn.ReLU(inplace=True),
+                MemBlock(n_f[0], n_f[0]), MemBlock(n_f[0], n_f[0]), MemBlock(n_f[0], n_f[0]), nn.Upsample(scale_factor=2 if decoder_space_upscale[0] else 1), TGrow(n_f[0], 2 if decoder_time_upscale[0] else 1), conv(n_f[0], n_f[1], bias=False),
+                MemBlock(n_f[1], n_f[1]), MemBlock(n_f[1], n_f[1]), MemBlock(n_f[1], n_f[1]), nn.Upsample(scale_factor=2 if decoder_space_upscale[1] else 1), TGrow(n_f[1], 2 if decoder_time_upscale[1] else 1), conv(n_f[1], n_f[2], bias=False),
+                MemBlock(n_f[2], n_f[2]), MemBlock(n_f[2], n_f[2]), MemBlock(n_f[2], n_f[2]), nn.Upsample(scale_factor=2 if decoder_space_upscale[2] else 1), TGrow(n_f[2], 2 if decoder_time_upscale[2] else 1), conv(n_f[2], n_f[3], bias=False),
+                nn.ReLU(inplace=True), conv(n_f[3], self.image_channels*self.patch_size**2),
+            )
         # computed properties
         self.t_downscale = 2**sum(t.stride == 2 for t in self.encoder if isinstance(t, TPool))
         self.t_upscale = 2**sum(t.stride == 2 for t in self.decoder if isinstance(t, TGrow))
