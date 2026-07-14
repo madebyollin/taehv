@@ -111,7 +111,7 @@ You can see example `StreamingTAEHV` usage in the [streaming demo notebook](./ex
 
 ## How can I make TAEHV decode video at higher-quality?
 
-For `taehv1_5` and `taew2_2`, you can use the larger `taehv1_5_super` and `taew2_2_super` weights to get higher-quality video output at the cost of slightly increased compute (and higher parameter count). Thsee `super` models are intended for realtime world modeling and video usecases where TAEHV output serves as the final output (rather than a temporary preview).
+For `taehv1_5` and `taew2_2`, you can use the larger `taehv1_5_super` and `taew2_2_super` weights to get higher-quality video output at the cost of slightly increased compute (and higher parameter count). These `super` models are intended for realtime world modeling and video usecases where TAEHV output serves as the final output (rather than a temporary preview).
 
 Here's a side-by-side comparison using Overworld's [Waypoint-1.5](https://over.world/blog/waypoint-1-5); though neither VAE is perfect, TAEHV1.5-Super does a better job at decoding fine details and keeping them visually-stable.
 
