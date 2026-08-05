@@ -195,10 +195,13 @@ class TAEHV(nn.Module):
         if len(decoder_time_upscale) == 2:
             decoder_time_upscale = (False, *decoder_time_upscale)
         self.is_cogvideox = checkpoint_path is not None and "taecvx" in checkpoint_path
+        self.is_h3 = checkpoint_path is not None and "taeh3" in checkpoint_path
         if checkpoint_path is not None and "taew2_2" in checkpoint_path:
             self.patch_size, self.latent_channels = 2, 48
         if checkpoint_path is not None and "taehv1_5" in checkpoint_path:
             self.patch_size, self.latent_channels = 2, 32
+        if self.is_h3:
+            self.patch_size, self.latent_channels, encoder_time_downscale = 2, 24, (True, True, False)
         if checkpoint_path is not None and "taeltx" in checkpoint_path: # same for both 2 and 2.3
             self.patch_size, self.latent_channels, encoder_time_downscale, decoder_time_upscale = 4, 128, (True, True, True), (True, True, True)
         if arch_variant is None and checkpoint_path is not None and "_super" in checkpoint_path:
@@ -257,6 +260,32 @@ class TAEHV(nn.Module):
         if self.patch_size > 1: x = F.pixel_unshuffle(x, self.patch_size)
         return x
 
+    def _encode_h3_video(self, x, parallel, show_progress_bar):
+        """Match H3's 17-frame chunks and three-token drop.
+        https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/fa9c8ab1eaa21c8ae25e7e40b83b2e6002f340af/FL2VA/video_vae/klvae.py#L461-L503
+        """
+        batch = x.shape[0]
+        x = torch.cat([x, x[:, -1:].expand(-1, -x.shape[1] % 17, -1, -1, -1)], dim=1)
+        x = F.pad(x.reshape(batch, -1, 17, *x.shape[2:]), (0, 0, 0, 0, 0, 0, 3, 0))
+        x = self.preprocess_input_frames(x)
+        if parallel:
+            x = apply_model_with_memblocks(self.encoder, x.flatten(0, 1), True, show_progress_bar)
+            x = x.reshape(batch, -1, *x.shape[2:])
+        else:
+            x = torch.cat([apply_model_with_memblocks(self.encoder, chunk, False, False)
+                           for chunk in tqdm(x.unbind(1), disable=not show_progress_bar)], dim=1)
+        return x[:, :-3]
+
+    def _decode_h3_video(self, x, parallel, show_progress_bar):
+        """Match H3's five-token chunks and per-chunk prefix trim.
+        https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/fa9c8ab1eaa21c8ae25e7e40b83b2e6002f340af/FL2VA/video_vae/klvae.py#L678-L786
+        """
+        x = apply_model_with_memblocks(self.decoder, x, parallel, show_progress_bar)
+        chunk_frames = 5 * self.t_upscale
+        x = F.pad(x, (0, 0, 0, 0, 0, 0, 0, -x.shape[1] % chunk_frames))
+        x = x.unflatten(1, (-1, chunk_frames))[:, :, self.frames_to_trim:].flatten(1, 2)
+        return self.postprocess_output_frames(x[:, :-3 * self.t_upscale])
+
     def encode_video(self, x, parallel=True, show_progress_bar=True):
         """Encode a sequence of frames.
 
@@ -267,6 +296,8 @@ class TAEHV(nn.Module):
               if False, frames will be processed sequentially.
         Returns NTCHW latent tensor with ~Gaussian values.
         """
+        if self.is_h3:
+            return self._encode_h3_video(x, parallel, show_progress_bar)
         x = self.preprocess_input_frames(x)
         if x.shape[1] % self.t_downscale != 0:
             # pad at end to multiple of self.t_downscale
@@ -290,6 +321,8 @@ class TAEHV(nn.Module):
               if False, frames will be processed sequentially.
         Returns NTCHW RGB tensor with ~[0, 1] values.
         """
+        if self.is_h3:
+            return self._decode_h3_video(x, parallel, show_progress_bar)
         skip_trim = self.is_cogvideox and x.shape[1] % 2 == 0
         x = apply_model_with_memblocks(self.decoder, x, parallel, show_progress_bar)
         x = self.postprocess_output_frames(x)
