@@ -31,7 +31,7 @@ See the [profiling notebook](./examples/TAEHV_Profiling.ipynb) for details on th
 
 To use TAEHV with different video models, you can load the different model weight files from this repo:
 
-* For **MiniMax H3**, load the `taeh3` weights (currently supported in [ComfyUI-KJNodes](https://huggingface.co/Kijai/MiniMax-H3-TAE) and [ComfyUI-bleh](https://github.com/blepping/ComfyUI-bleh))
+* For **MiniMax H3**, load the `taeh3` weights (currently supported in [ComfyUI nightly](https://github.com/Comfy-Org/ComfyUI/pull/15695), [ComfyUI-KJNodes](https://huggingface.co/Kijai/MiniMax-H3-TAE) and [ComfyUI-bleh](https://github.com/blepping/ComfyUI-bleh))
 * For **Hunyuan Video 1.5**, load the `taehv1_5` weights ([example notebook](./examples/TAEHV1.5_Encoding_Decoding_Demo.ipynb)).
     * You can also use `taehv1_5_super` to get higher-quality output at the cost of slightly more compute.
 * For **Wan 2.1**, load the `taew2_1` weights (see the [Wan 2.1 example notebook](./examples/TAEW2.1_T2I_Demo.ipynb)).
