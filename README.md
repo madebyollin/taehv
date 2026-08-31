@@ -83,6 +83,34 @@ If you're writing new code involving both TAEHV and Diffusers, keep the followin
 2. TAEHV stores videos in **NTCHW** dimension order (time, then channels), while Diffusers stores videos in **NCTHW** dimension order.
 3. TAEHV does not use any latent scales / shifts (TAEHV encodes / decodes exactly what diffusion models use), whereas Diffusers requires **explicitly applying** a `latents_mean` and `latents_std` each time you encode or decode something.
 
+## How can I decode MiniMax H3 latents?
+
+Use `TAEH3` when you know the checkpoint contains the MiniMax H3 weights. The
+explicit class keeps the H3 architecture and temporal chunking behavior even
+if you rename the checkpoint file.
+
+```python
+import torch
+from taehv import TAEH3
+
+decoder = TAEH3("taeh3.pth").eval()
+latents = torch.randn(1, 37, 24, 30, 52)  # NTCHW diffusion latents
+
+with torch.no_grad():
+    frames = decoder.decode_video(
+        latents,
+        parallel=True,
+        show_progress_bar=False,
+    )
+
+assert frames.shape == (1, 124, 3, 480, 832)
+```
+
+Pass H3 diffusion latents directly. Do not apply the full H3 VAE's latent
+mean or standard deviation. `TAEH3` follows H3's five-token decode chunks,
+removes each chunk's causal prefix, and maps 37 latent frames to 124 output
+frames.
+
 ## How can I make TAEHV even faster?
 
 You can disable TAEHV's temporal or spatial upscaling to get even-cheaper decoding.

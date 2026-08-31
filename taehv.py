@@ -333,6 +333,27 @@ class TAEHV(nn.Module):
             return x
         return x[:, self.frames_to_trim:]
 
+class TAEH3(TAEHV):
+    """Tiny autoencoder configured for MiniMax H3 video latents.
+
+    H3 uses 24 latent channels, a 2x2 spatial patch shuffle, and a chunked
+    temporal decode contract. This class selects those settings explicitly so
+    callers do not need to preserve ``taeh3`` in a renamed checkpoint path.
+    """
+
+    def __init__(self, checkpoint_path="taeh3.pth", decoder_space_upscale=(True, True, True)):
+        if checkpoint_path is not None:
+            checkpoint_path = str(checkpoint_path)
+        super().__init__(
+            checkpoint_path=checkpoint_path,
+            encoder_time_downscale=(True, True, False),
+            decoder_time_upscale=(False, True, True),
+            decoder_space_upscale=decoder_space_upscale,
+            patch_size=2,
+            latent_channels=24,
+        )
+        self.is_h3 = True
+
 class StreamingTAEHV(nn.Module):
     def __init__(self, taehv):
         """Streaming wrapper around TAEHV for real-time use-cases (where not all inputs are available immediately).
