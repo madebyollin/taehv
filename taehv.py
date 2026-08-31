@@ -345,7 +345,7 @@ class TAEH3(TAEHV):
         if checkpoint_path is not None:
             checkpoint_path = str(checkpoint_path)
         super().__init__(
-            checkpoint_path=checkpoint_path,
+            checkpoint_path=None,
             encoder_time_downscale=(True, True, False),
             decoder_time_upscale=(False, True, True),
             decoder_space_upscale=decoder_space_upscale,
@@ -353,6 +353,13 @@ class TAEH3(TAEHV):
             latent_channels=24,
         )
         self.is_h3 = True
+        if checkpoint_path is not None:
+            if checkpoint_path.endswith(".safetensors"):
+                from safetensors.torch import load_file
+                state = load_file(checkpoint_path)
+            else:
+                state = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+            self.load_state_dict(self.patch_tgrow_layers(state))
 
 class StreamingTAEHV(nn.Module):
     def __init__(self, taehv):

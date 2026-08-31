@@ -28,6 +28,10 @@ dependencies = [
 Homepage = "https://github.com/madebyollin/taehv"
 Repository = "https://github.com/madebyollin/taehv"
 
+[project.optional-dependencies]
+safetensors = ["safetensors"]
+test = ["pytest", "safetensors"]
+
 [project.scripts]
 taehv = "taehv:main"
 

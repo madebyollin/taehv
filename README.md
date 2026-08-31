@@ -111,6 +111,14 @@ mean or standard deviation. `TAEH3` follows H3's five-token decode chunks,
 removes each chunk's causal prefix, and maps 37 latent frames to 124 output
 frames.
 
+You can also pass `safetensors/taeh3.safetensors` after installing
+`pip install '.[safetensors]'`. The checkpoint weights are Ollin Boer Bohan's
+upstream TAEH3 release. This fork adds an explicit API and tests; it is not a
+newly trained model or an official MiniMax release. TAEH3 trades reconstruction
+quality for speed. Keep the full H3 VAE available for final-quality output.
+The generic `StreamingTAEHV` wrapper does not implement H3's chunk trimming;
+use `decode_video` for H3.
+
 ## How can I make TAEHV even faster?
 
 You can disable TAEHV's temporal or spatial upscaling to get even-cheaper decoding.
