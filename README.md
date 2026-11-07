@@ -116,10 +116,35 @@ You can see example `StreamingTAEHV` usage in the [streaming demo notebook](./ex
 
 For `taehv1_5` and `taew2_2`, you can use the larger `taehv1_5_super` and `taew2_2_super` weights to get higher-quality video output at the cost of slightly increased compute (and higher parameter count). These `super` models are intended for realtime world modeling and video usecases where TAEHV output serves as the final output (rather than a temporary preview).
 
-Here's a side-by-side comparison using Overworld's [Waypoint-1.5](https://over.world/blog/waypoint-1-5); though neither VAE is perfect, TAEHV1.5-Super does a better job at decoding fine details and keeping them visually-stable.
+### TAEW2.2-Super
+
+Here's a side-by-side comparison of full Wan2.2 vs TAEW2.2-Super decoding on a rollout from [Zing-0.5](https://github.com/seedleap/zing-world-model):
+
+https://github.com/user-attachments/assets/a2640b6f-abe6-40d0-9f11-f1deee10d1a4
+
+Here's a quantitative comparison of the two options (as well as base TAEW2.2):
+
+| Wan 2.2 decoder | rFVD on world-model rollouts ↓ | rFVD on DAVIS ↓ | Decode time per frame ↓ | Peak decode memory ↓ |
+|---|---|---|---|---|
+| Wan 2.2 VAE | 0.0 (reference) | 24.4 | 50.5 ms | 12.8 GB |
+| TAEW2.2-Super | 4.0 | 44.7 | 1.8 ms | 0.8 GB |
+| TAEW2.2 | 16.1 | 113.2 | 1.2 ms | 0.8 GB |
+
+<details>
+<summary>Evaluation details</summary>
+
+* **World-model rollouts:** 90 held-out rollouts (30 each from [ABot-World-0-5B-LF](https://huggingface.co/acvlab/ABot-World-0-5B-LF), Matrix-Game 3.0 and Zing-0.5), 900 clips of 16 frames, cold-start frames skipped. The reference is the full Wan 2.2 VAE decode of the same generated latents, so the full VAE scores 0 by definition.
+* **DAVIS:** 60 DAVIS-2017 test clips (test-dev + test-challenge), 33 frames at 512×512, encoded with the Wan 2.2 VAE encoder, rFVD against the source video.
+* **Cost:** 121 frames at 1280×704, batch 1, NVIDIA GH200. Wan 2.2 VAE in bf16 via diffusers, untiled (tiled: 110 ms/frame, 4.5 GB). TAEHV in fp16 streaming mode (`StreamingTAEHV`); memory includes weights.
+* Older TAEW2.2-Super 2026-07 weights are still available in [git history](https://github.com/madebyollin/taehv/commit/e5873d1ab4a4abfe25030b6de5eedf64d91c169a); it had 10.9 rFVD on WM rollouts and 84.5 on DAVIS, so the latest weights are ~2x better.
+
+</details>
+
+### TAEHV1.5-Super
+
+Here's a side-by-side comparison of TAEHV1.5 vs. TAEHV1.5-Super using Overworld's [Waypoint-1.5](https://over.world/blog/waypoint-1-5); though neither VAE is perfect, TAEHV1.5-Super does a better job at decoding fine details and keeping them visually-stable.
 
 https://github.com/user-attachments/assets/0b78cce8-7ade-4ac0-8c80-fd979f8e8aa3
-
 
 ## How can I cite TAEHV in a publication?
 
